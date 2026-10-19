@@ -63,3 +63,5 @@ python tools/compare.py bench/baseline-2026-10-19.json bench/bench-extended-resu
 업데이트 후 유지·새 커널 재빌드·영구 부팅 설정과 ComfyUI 실측은 [UPDATE-NOTES.md](UPDATE-NOTES.md)에 정리했다.
 
 독립 환경의 입력 다운로드부터 빌드·검사·벤치마크 준비까지는 [BUILD.md](BUILD.md)를 따른다. 저장소에는 개인 식별자가 제거된 문서와 소스만 포함하며, 원시 로그·빌드 산출물은 `.gitignore`로 제외한다.
+
+일반 GEMM의 병목과 레지스터 텐서 연산 처리량을 분리하는 CUDA 마이크로벤치마크는 [bench/mma/README.md](bench/mma/README.md)에 있다.

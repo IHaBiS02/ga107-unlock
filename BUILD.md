@@ -76,3 +76,5 @@ python3 tools/compare.py bench/baseline-2026-10-19.json bench/bench-extended-res
 ```
 
 초기 기준 데이터와 요약 결과만 저장소에 포함한다. 원시 부팅 로그·빌드 로그는 제외했으며 문서에 언급된 로컬 로그 파일은 clone 후 존재하지 않는다.
+
+PyTorch 없이 CUDA Toolkit과 NVML로 실행하는 레지스터 MMA 실험은 [bench/mma/README.md](bench/mma/README.md)를 참고한다.
