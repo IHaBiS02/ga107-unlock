@@ -1,0 +1,18 @@
+[
+  {
+    "b_transposed": false,
+    "n": 4096,
+    "tops": 7.903466463738096,
+    "kernels": [
+      "void cutlass1x::gemm::gemm_kernel_nolb<cutlass1x::gemm::Gemm<cutlass1x::gemm::IgemmTraits<(cutlass1x::MatrixLayout::Kind)1, (cutlass1x::MatrixLayout::Kind)1, cutlass1x::Shape<32, 64, 64, 1>, int, cutlass1x::gemm::LinearScalingDevicePtr<int, cutlass1x::gemm::FragmentMultiplyAdd<int, int, true> >, cutlass1x::Shape<32, 8, 8, 1>, int, cutlass1x::gemm::IgemmTraitsHelper<(cutlass1x::MatrixLayout::Kind)1, (cutlass1x::MatrixLayout::Kind)1, cutlass1x::Shape<32, 64, 64, 1>, int, cutlass1x::gemm::LinearScalingDevicePtr<int, cutlass1x::gemm::FragmentMultiplyAdd<int, int, true> >, cutlass1x::Shape<32, 8, 8, 1>, int> > > >(cutlass1x::gemm::Gemm<cutlass1x::gemm::IgemmTraits<(cutlass1x::MatrixLayout::Kind)1, (cutlass1x::MatrixLayout::Kind)1, cutlass1x::Shape<32, 64, 64, 1>, int, cutlass1x::gemm::LinearScalingDevicePtr<int, cutlass1x::gemm::FragmentMultiplyAdd<int, int, true> >, cutlass1x::Shape<32, 8, 8, 1>, int, cutlass1x::gemm::IgemmTraitsHelper<(cutlass1x::MatrixLayout::Kind)1, (cutlass1x::MatrixLayout::Kind)1, cutlass1x::Shape<32, 64, 64, 1>, int, cutlass1x::gemm::LinearScalingDevicePtr<int, cutlass1x::gemm::FragmentMultiplyAdd<int, int, true> >, cutlass1x::Shape<32, 8, 8, 1>, int> > >::Params)"
+    ]
+  },
+  {
+    "b_transposed": true,
+    "n": 4096,
+    "tops": 20.62718331338394,
+    "kernels": [
+      "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_256x128_64x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_256x128_64x3_tn_align16::Params)"
+    ]
+  }
+]

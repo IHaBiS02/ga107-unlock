@@ -1,0 +1,39 @@
+# Generated firmware, extracted vendor trees, staging, and build logs
+/build/
+/research/source/
+/research/cmp90-reference/
+/audit-inputs/
+*.log
+*.rom
+/research/preflight-*.json
+
+# Kernel build products (including hidden kbuild metadata)
+*.o
+*.ko
+*.a
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+
+# Local benchmark outputs; curated reference data may be committed separately
+/bench/bench-extended-results.json
+/bench/after-*.json
+/bench/off-*.json
+
+# Python environments and caches
+.venv/
+bench-venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local secrets and editor files
+.env
+.env.*
+*.pem
+*.key
+*.swp
+*~

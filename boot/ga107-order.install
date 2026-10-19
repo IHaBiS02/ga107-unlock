@@ -1,0 +1,21 @@
+#!/bin/bash
+# mkinitcpio build hook: writes only into the image, never the host's units.
+build() {
+    add_module ga107_unlock
+    add_file - /usr/lib/systemd/system/ga107-unlock.service 644 <<'UNIT'
+[Unit]
+Description=Complete optional GA107 experiment before GPU driver discovery
+DefaultDependencies=no
+Before=sysinit.target systemd-modules-load.service systemd-udevd.service systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/modprobe ga107_unlock
+TimeoutStartSec=90s
+UNIT
+    add_symlink /usr/lib/systemd/system/sysinit.target.wants/ga107-unlock.service ../ga107-unlock.service
+}
+help() {
+    echo 'Order ga107_unlock before systemd module workers and udev in the initrd.'
+}

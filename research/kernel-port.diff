@@ -1,0 +1,436 @@
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/Kbuild ga107-unlock/kernel/gpu_unlock/Kbuild
+--- gpu-unlock/kernel/gpu_unlock/Kbuild	2026-10-18 20:43:52.857096035 +0900
++++ ga107-unlock/kernel/gpu_unlock/Kbuild	2026-10-19 09:09:56.820398907 +0900
+@@ -1,4 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-m += gpu_unlock.o
+-gpu_unlock-y := main.o gfw_eval.o prep_610.o layout_610.o \
++obj-m += ga107_unlock.o
++ga107_unlock-y := main.o gfw_eval.o prep_610.o layout_610.o \
+ 	vbios_610.o unlock_610.o
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/main.c ga107-unlock/kernel/gpu_unlock/main.c
+--- gpu-unlock/kernel/gpu_unlock/main.c	2026-10-18 20:43:52.857249374 +0900
++++ ga107-unlock/kernel/gpu_unlock/main.c	2026-10-19 09:45:29.712683481 +0900
+@@ -1,107 +1,69 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+-#include <linux/async.h>
+ #include <linux/init.h>
+ #include <linux/module.h>
+ #include <linux/pci.h>
+ #include <linux/string.h>
+-
++#include "target.h"
+ #include "unlock_610.h"
+ 
+-static char *targets;
+-module_param(targets, charp, 0444);
+-MODULE_PARM_DESC(targets, "\"all\" or comma-separated PCI addresses of RTX 3090 cards to unlock");
+-
+-#define RTX_3090 0x2204
+-
+-static ASYNC_DOMAIN_EXCLUSIVE(unlock_domain);
+-static struct gpu_unlock_610_shared shared;
+-
+-/* Runs concurrently for each card; consumes the reference it is given. */
+-static void unlock_one(void *data, async_cookie_t cookie)
+-{
+-	struct pci_dev *pdev = data;
+-	int ret;
+-
+-	pci_dev_lock(pdev);
+-	ret = pdev->driver ? -EBUSY : gpu_unlock_610_unlock(pdev, &shared);
+-	pci_dev_unlock(pdev);
+-	if (ret)
+-		pci_err(pdev, "gpu_unlock: unlock failed (%d)\n", ret);
+-	else
+-		pci_info(pdev, "gpu_unlock: unlocked\n");
+-	pci_dev_put(pdev);
+-}
+-
+-/* True when the comma-separated targets list names this PCI device. */
+-static bool listed(const char *name)
+-{
+-	const char *entry, *end;
+-
+-	for (entry = targets; *entry; entry = *end ? end + 1 : end) {
+-		end = strchrnul(entry, ',');
+-		if (strlen(name) == end - entry && !strncasecmp(name, entry, end - entry))
+-			return true;
+-	}
+-	return false;
+-}
+-
+-static void report_unmatched(void)
+-{
+-	const char *entry, *end;
+-	struct pci_dev *pdev;
+-
+-	for (entry = targets; *entry; entry = *end ? end + 1 : end) {
+-		end = strchrnul(entry, ',');
+-		pdev = NULL;
+-		while ((pdev = pci_get_device(PCI_VENDOR_ID_NVIDIA, RTX_3090, pdev)))
+-			if (strlen(pci_name(pdev)) == end - entry &&
+-			    !strncasecmp(pci_name(pdev), entry, end - entry))
+-				break;
+-		if (pdev)
+-			pci_dev_put(pdev);
+-		else
+-			pr_err("gpu_unlock: no RTX 3090 at \"%.*s\"\n",
+-			       (int)(end - entry), entry);
+-	}
+-}
++static char *target;
++static bool execute;
++module_param(target, charp, 0444);
++MODULE_PARM_DESC(target, "Exact full PCI address; no all/list support");
++module_param(execute, bool, 0444);
++MODULE_PARM_DESC(execute, "Run unverified GA107 V67/SS0 experiment (default false)");
+ 
+-static int __init gpu_unlock_init(void)
++static int __init ga107_unlock_init(void)
+ {
+-	struct pci_dev *pdev = NULL;
+-	bool all;
+-	int ret;
+-
+-	/* Loaded ahead of nvidia on every boot; the command line is the opt-in. */
+-	if (!targets || !*targets)
+-		return 0;
+-	all = !strcmp(targets, "all");
+-	if (!all)
+-		report_unmatched();
+-	while ((pdev = pci_get_device(PCI_VENDOR_ID_NVIDIA, RTX_3090, pdev))) {
+-		if (!all && !listed(pci_name(pdev)))
+-			continue;
+-		if (!shared.gsp) {
+-			ret = gpu_unlock_610_load_shared(pdev, &shared);
+-			if (ret) {
+-				pci_err(pdev, "gpu_unlock: firmware load failed (%d)\n", ret);
+-				pci_dev_put(pdev);
+-				return 0;
+-			}
+-		}
+-		async_schedule_domain(unlock_one, pci_dev_get(pdev), &unlock_domain);
+-	}
+-	/* nvidia loads once this returns: every card must be finished by then. */
+-	async_synchronize_full_domain(&unlock_domain);
+-	gpu_unlock_610_release_shared(&shared);
+-	return 0;
++    struct pci_dev *pdev = NULL;
++    struct gpu_unlock_610_shared shared = {0};
++    int ret;
++    if (!target || !*target) {
++        pr_info("ga107_unlock: disabled; no target specified\n");
++        return 0;
++    }
++    while ((pdev = pci_get_device(PCI_VENDOR_ID_NVIDIA, GA107_PCI_ID, pdev))) {
++        if (strcmp(pci_name(pdev), target))
++            continue;
++        if (!ga107_board_matches(pdev->vendor, pdev->device,
++                                pdev->subsystem_vendor, pdev->subsystem_device)) {
++            pci_err(pdev, "ga107_unlock: LG 1854:052f board required\n");
++            pci_dev_put(pdev);
++            return -ENODEV;
++        }
++        if (!execute) {
++            pci_info(pdev, "ga107_unlock: matched; execute=0, no firmware request or MMIO\n");
++            pci_dev_put(pdev);
++            return 0;
++        }
++        pci_dev_lock(pdev);
++        if (pdev->driver) {
++            pci_err(pdev, "ga107_unlock: bound card refused; cold pre-driver boot required\n");
++            pci_dev_unlock(pdev);
++            pci_dev_put(pdev);
++            return -EBUSY;
++        }
++        pci_warn(pdev, "ga107_unlock: EXPERIMENTAL V67 + SS0; SS1 preserved; performance unverified\n");
++        ret = gpu_unlock_610_load_shared(pdev, &shared);
++        if (!ret)
++            ret = gpu_unlock_610_unlock(pdev, &shared);
++        gpu_unlock_610_release_shared(&shared);
++        pci_dev_unlock(pdev);
++        if (ret)
++            pci_err(pdev, "ga107_unlock: experiment failed (%d); power off before retry\n", ret);
++        else
++            pci_info(pdev, "ga107_unlock: SS0 applied and FLR completed; benchmark required\n");
++        pci_dev_put(pdev);
++        /* After hardware work init must succeed: a failed transaction may
++         * retain DMA buffers and pin THIS_MODULE until full power removal. */
++        return 0;
++    }
++    pr_err("ga107_unlock: no eligible GA107 at %s\n", target);
++    return -ENODEV;
+ }
+-
+-static void __exit gpu_unlock_exit(void)
+-{
+-}
+-
+-module_init(gpu_unlock_init);
+-module_exit(gpu_unlock_exit);
++static void __exit ga107_unlock_exit(void) {}
++module_init(ga107_unlock_init);
++module_exit(ga107_unlock_exit);
+ MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("RTX 3090 pre-driver BF16 unlock");
+-MODULE_VERSION("1.0.0");
++MODULE_DESCRIPTION("Experimental LG GA107 pre-driver V67/SS0 rate override");
++MODULE_VERSION("0.1.1-experimental");
+Only in ga107-unlock/kernel/gpu_unlock: target.h
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/unlock_610.c ga107-unlock/kernel/gpu_unlock/unlock_610.c
+--- gpu-unlock/kernel/gpu_unlock/unlock_610.c	2026-10-18 20:43:52.857785674 +0900
++++ ga107-unlock/kernel/gpu_unlock/unlock_610.c	2026-10-19 09:45:29.710683476 +0900
+@@ -1,7 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ /*
+  * Pre-driver V67 unlock, run before the stock driver binds: FWSEC-FRTS from
+- * the board ROM, Booter with the V67 signature, the SS0/SS1 selector writes, then
++ * the board ROM, Booter with the V67 signature, the SS0 selector write (SS1 preserved), then
+  * FLR so the stock driver starts from a clean, halted GSP.
+  */
+ #include <linux/aperture.h>
+@@ -19,20 +19,20 @@
+ #include "prep_610.h"
+ #include "unlock_610.h"
+ #include "vbios_610.h"
++#include "target.h"
+ 
+ #define SEC2_BASE 0x00840000u
+ #define SEC2_FBIF 0x00840600u
+ #define SEC2_FALCON2 0x00841000u
+ /* SS0 holds eight 4-bit fields; SS1 stores only its low 4 bits (0x2 when
+- * cold). Both get the same per-field value 8. */
++ * cold on the reference board). Only SS0 is written in this port. */
+ #define GU_SS0_UNLOCK 0x88888888u
+-#define GU_SS1_UNLOCK 0x8u
+ #define BOOTER_MAGIC 0x314c5442u
+-#define BOOTER_FILE "gpu-unlock/610.43.03/booter_load_ga102.bin"
+-#define V67_FILE "gpu-unlock/610.43.03/v67-ga102-610.43.03.bin"
+-#define GSP_FILE "gpu-unlock/610.43.03/gsp_ga10x.bin"
+-#define BOOT_FILE "gpu-unlock/610.43.03/gsp_boot_ga102.bin"
+-#define BOOT_DESC_FILE "gpu-unlock/610.43.03/gsp_boot_desc_ga102.bin"
++#define BOOTER_FILE "ga107-unlock/610.43.03/booter_load_ga102.bin"
++#define V67_FILE "ga107-unlock/610.43.03/v67-ga102-610.43.03.bin"
++#define GSP_FILE "ga107-unlock/610.43.03/gsp_ga10x.bin"
++#define BOOT_FILE "ga107-unlock/610.43.03/gsp_boot_ga102.bin"
++#define BOOT_DESC_FILE "ga107-unlock/610.43.03/gsp_boot_desc_ga102.bin"
+ 
+ struct unlock_transaction_page {
+ 	void *cpu;
+@@ -85,6 +85,7 @@
+ 	bool quiesced;
+ 	bool retained;
+ 	u32 plm_entry;
++	u32 ss1_entry;
+ 	u32 bars[6];
+ 	void *fwsec_cpu;
+ 	dma_addr_t fwsec_dma;
+@@ -318,6 +319,10 @@
+ 	ret = poll_us(work, base + 0x118, 1, 0, 1000000, true);
+ 	if (ret)
+ 		return GU_RESULT(ret);
++	/* Only now can our buffers become visible to the Falcon DMA engine.
++	 * Preflight rejects and initial queue failures must remain reclaimable.
++	 * Once programmed, retain conservatively on any later timeout/error. */
++	work->firmware_started = true;
+ 	write_bar(work, base + 0x110, lower_32_bits(src >> 8));
+ 	write_bar(work, base + 0x128, upper_32_bits(src >> 8) & 0x1ff);
+ 	while (done < size) {
+@@ -399,7 +404,7 @@
+ 			u32 plm, engine, identity;
+ 
+ 			if (diag_pci_dword(work, false, PCI_VENDOR_ID, &identity) ||
+-			    identity != 0x220410de ||
++			    identity != 0x25ab10de ||
+ 			    read_bar(work, eng->base + 0x100, &engine) || engine == ~0u ||
+ 			    (engine & 0xffff0000u) == 0xbadf0000u ||
+ 			    read_bar(work, GU_FEAT_PLM_OFFSET, &plm))
+@@ -701,7 +706,7 @@
+ 	in->boot_size = work->boot_desc.image_size;
+ 	in->image_size = work->image_span.size;
+ 	in->nonwpr_size = 1ull << 20;
+-	/* GA102's supported minimum heap; no GSP-RM clients are started here. */
++	/* GA102/GA107 share the 88 MiB minimum in the pinned HAL; no GSP-RM clients are started here. */
+ 	in->heap_request = 88ull << 20;
+ 	ret = gpu_unlock_layout(in, &work->layout);
+ 	dev_info(&work->pdev->dev,
+@@ -723,7 +728,7 @@
+ 		 (unsigned long long)work->layout.frts_offset,
+ 		 (unsigned long long)work->layout.wpr_end,
+ 		 (unsigned long long)(in->usable_fb - (256ull << 20)));
+-	/* GA102 has no scrubber: all reservations must fit the pre-scrubbed top. */
++	/* Pinned GA10x HAL has no scrubber: all reservations must fit the pre-scrubbed top. */
+ 	if (work->layout.nonwpr_start < in->usable_fb - (256ull << 20)) {
+ 		dev_err(&work->pdev->dev, "layout rejected: reservations below pre-scrubbed top 256 MiB\n");
+ 		return GU_RESULT(-ERANGE);
+@@ -890,7 +895,7 @@
+ 	size_t mapped = 0;
+ 	u8 *rom = NULL;
+ 	struct gpu_unlock_fwsec fw;
+-	u32 fuse_raw, version, scratch, wpr_lo, wpr_hi;
++	u32 fuse_raw, version, scratch, wpr_lo, wpr_hi, dmem_transfer;
+ 	u16 command;
+ 	u64 frts = work->layout.frts_offset;
+ 	void *image = NULL;
+@@ -919,6 +924,14 @@
+ 		ret = -EOPNOTSUPP;
+ 		goto out;
+ 	}
++	/* Official s_dmaTransfer_GA102 loops in 256-byte blocks, rounding up
++	 * the last transfer. The board's 0x980-byte DMEM needs 0xa00 bytes;
++	 * verify its existing image padding rather than reading beyond it. */
++	ret = gpu_unlock_fwsec_dmem_transfer(&fw, &dmem_transfer);
++	if (ret)
++		goto out;
++	dev_info(&work->pdev->dev, "FWSEC DMEM: declared=%#x transfer=%#x image=%#x data_offset=%#x\n",
++		 fw.dmem_size, dmem_transfer, fw.image_size, fw.data_off);
+ 	image = diag_dma_alloc(work, "fwsec", fw.image_size, &image_dma, GFP_KERNEL);
+ 	if (!image) {
+ 		ret = -ENOMEM;
+@@ -953,9 +966,8 @@
+ 		ret = -EIO;
+ 		goto out;
+ 	}
+-	work->firmware_started = true;
+ 	ret = falcon_hs(work, &gsp, 0, fw.imem_size, fw.imem_va, fw.imem_pa,
+-			fw.data_off, fw.dmem_size, fw.dmem_pa, fw.pkc_off,
++			fw.data_off, dmem_transfer, fw.dmem_pa, fw.pkc_off,
+ 			fw.engine_mask, fw.ucode_id,
+ 			image_dma, 0, 0, false);
+ 	if (ret)
+@@ -1016,6 +1028,7 @@
+ 				return GU_RESULT(-ENODEV);
+ 			dev_info(&work->pdev->dev, "entry: plm=%#x ss0=%#x ss1=%#x wpr2_hi=%#x\n",
+ 				 work->plm_entry, ss0, ss1, wpr_hi);
++			work->ss1_entry = ss1;
+ 			/* An open PLM means the card was already unlocked or not cold. */
+ 			if (work->plm_entry == ~0u)
+ 				return GU_RESULT(-EALREADY);
+@@ -1112,12 +1125,21 @@
+ 	return GU_RESULT(value == unlock ? 0 : -EIO);
+ }
+ 
+-/* SS0 selects the full BF16 rate; SS1 gets the same field value. FLR keeps both. */
++/* Experimental SS0-wide policy. No verified GA107 per-operation bit map
++ * exists in the public headers. Preserve SS1; do not invent a BF16-only mask.
++ */
+ static int unlock_transaction_selector(struct unlock_transaction_work *work)
+ {
+-	int ret = write_selector(work, "SS0", GU_FEAT_SS0_OFFSET, GU_SS0_UNLOCK);
++	u32 ss1;
++	int ret;
+ 
+-	return ret ? ret : write_selector(work, "SS1", GU_FEAT_SS1_OFFSET, GU_SS1_UNLOCK);
++	if (read_bar(work, GU_FEAT_SS1_OFFSET, &ss1) || inaccessible(ss1))
++		return GU_RESULT(-ENODEV);
++	if (ss1 != work->ss1_entry)
++		return GU_RESULT(-EIO);
++	ret = write_selector(work, "SS0", GU_FEAT_SS0_OFFSET, GU_SS0_UNLOCK);
++	dev_info(&work->pdev->dev, "SS1 preserved: %#x (no write)\n", ss1);
++	return ret;
+ }
+ 
+ /* Reset SEC2 after FLR and leave it halted with reset released. Do not reset
+@@ -1226,7 +1248,7 @@
+ 	for (;;) {
+ 		sample = (struct gpu_unlock_gfw_sample){ };
+ 		ret = diag_pci_dword(work, false, PCI_VENDOR_ID, &identity);
+-		sample.config_ok = !ret && identity == 0x220410de;
++		sample.config_ok = !ret && identity == 0x25ab10de;
+ 		if (!sample.config_ok) {
+ 			ret = -ENODEV;
+ 			break;
+@@ -1270,8 +1292,8 @@
+ 	    read_bar(work, GU_FEAT_SS1_OFFSET, &ss1) || ss1 == ~0u)
+ 		return GU_RESULT(-ENODEV);
+ 	dev_info(&work->pdev->dev, "pre-FLR selectors: ss0=%#x expected=%#x ss1=%#x expected=%#x\n",
+-		ss0, GU_SS0_UNLOCK, ss1, GU_SS1_UNLOCK);
+-	if (ss0 != GU_SS0_UNLOCK || ss1 != GU_SS1_UNLOCK)
++		ss0, GU_SS0_UNLOCK, ss1, work->ss1_entry);
++	if (ss0 != GU_SS0_UNLOCK || ss1 != work->ss1_entry)
+ 		return GU_RESULT(-EIO);
+ 	pci_clear_master(work->pdev);
+ 	work->master = false;
+@@ -1301,7 +1323,7 @@
+ 	/* The saved image predates BME. No transient restore with BME set. */
+ 	pci_restore_state(work->pdev);
+ 	if (diag_pci_dword(work, false, PCI_VENDOR_ID, &identity) ||
+-	    identity != 0x220410de ||
++	    identity != 0x25ab10de ||
+ 	    diag_pci_word(work, false, PCI_COMMAND, &command) ||
+ 	    command == 0xffff || (command & PCI_COMMAND_MASTER) ||
+ 	    !(command & PCI_COMMAND_MEMORY))
+@@ -1349,7 +1371,7 @@
+ 		return GU_RESULT(-EBUSY);
+ 	}
+ 	work->quiesced = true;
+-	if (ss0 != GU_SS0_UNLOCK || ss1 != GU_SS1_UNLOCK)
++	if (ss0 != GU_SS0_UNLOCK || ss1 != work->ss1_entry)
+ 		return GU_RESULT(-EIO);
+ 	return 0;
+ }
+@@ -1370,6 +1392,12 @@
+ 	struct unlock_transaction_work *work;
+ 	int ret, cleanup;
+ 
++	/* Reject alien boards or bound devices before requesting assets or MMIO. */
++	if (!ga107_board_matches(pdev->vendor, pdev->device,
++				pdev->subsystem_vendor, pdev->subsystem_device))
++		return -ENODEV;
++	if (pdev->driver)
++		return -EBUSY;
+ 	work = kzalloc(sizeof(*work), GFP_KERNEL);
+ 	if (!work)
+ 		return -ENOMEM;
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/unlock_610.h ga107-unlock/kernel/gpu_unlock/unlock_610.h
+--- gpu-unlock/kernel/gpu_unlock/unlock_610.h	2026-10-18 20:43:52.857785674 +0900
++++ ga107-unlock/kernel/gpu_unlock/unlock_610.h	2026-10-19 09:09:56.820581347 +0900
+@@ -20,9 +20,9 @@
+ void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *shared);
+ 
+ /*
+- * Unlock one cold, unbound RTX 3090. The caller holds pci_dev_lock. Returns 0
++ * Experiment on one cold, unbound LG GA107 25ab/1854:052f. The caller holds pci_dev_lock. Returns 0
+  * when the card is unlocked and handed back as found; otherwise a negative
+- * errno, with the card left locked. Unlocks of different cards may run
++ * errno, with hardware state possibly partially changed (power off before retry). Unlocks of different cards may run
+  * concurrently with the same shared firmware.
+  */
+ int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shared *shared);
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/vbios_610.c ga107-unlock/kernel/gpu_unlock/vbios_610.c
+--- gpu-unlock/kernel/gpu_unlock/vbios_610.c	2026-10-18 20:43:52.857785674 +0900
++++ ga107-unlock/kernel/gpu_unlock/vbios_610.c	2026-10-19 09:45:29.707683470 +0900
+@@ -247,6 +247,21 @@
+ 	return 0;
+ }
+ 
++int gpu_unlock_fwsec_dmem_transfer(const struct gpu_unlock_fwsec *fw, u32 *bytes)
++{
++	u32 rounded;
++
++	if (!fw || !bytes || !fw->dmem_size || fw->dmem_size > ~(u32)0 - 255 ||
++	    ((fw->data_off | fw->dmem_pa) & 255))
++		return GU_DIAG(-EINVAL);
++	rounded = (fw->dmem_size + 255) & ~255u;
++	if (range(fw->image_size, fw->data_off, rounded) ||
++	    (u64)fw->dmem_pa + rounded > (1ull << 24))
++		return GU_DIAG(-ERANGE);
++	*bytes = rounded;
++	return 0;
++}
++
+ int gpu_unlock_fwsec_patch_frts(u8 *image, const struct gpu_unlock_fwsec *fw, u64 frts_offset)
+ {
+ 	u8 *dmem, *mapper = NULL;
+diff -ru '--exclude=*.o' '--exclude=*.ko' '--exclude=*.mod*' '--exclude=.*.cmd' '--exclude=Module.symvers' '--exclude=modules.order' '--exclude=dkms.conf' gpu-unlock/kernel/gpu_unlock/vbios_610.h ga107-unlock/kernel/gpu_unlock/vbios_610.h
+--- gpu-unlock/kernel/gpu_unlock/vbios_610.h	2026-10-18 20:43:52.857785674 +0900
++++ ga107-unlock/kernel/gpu_unlock/vbios_610.h	2026-10-19 09:45:29.706683468 +0900
+@@ -38,5 +38,7 @@
+ 				u64 frts_offset);
+ int gpu_unlock_fwsec_sig_offset(u32 versions, u32 fuse_version, u32 sig_size,
+ 				u32 *offset);
++/* DMA uses whole 256-byte blocks; the final block must remain in the image. */
++int gpu_unlock_fwsec_dmem_transfer(const struct gpu_unlock_fwsec *fw, u32 *bytes);
+ 
+ #endif
