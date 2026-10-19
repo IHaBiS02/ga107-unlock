@@ -4,7 +4,7 @@
 
 `0.1.1`에서 SS0만 변경했을 때 레지스터 MMA의 FP16/BF16 FP32 누산은 약 512 → 1024 ops/SM/clock으로 올라갔지만 TF32는 약 256으로 유지됐다. 이 버전은 원본 `gpu-unlock`이 쓰는 SS1=8을 별도로 시험할 수 있게 한다.
 
-**SS1이 GA107의 TF32 필드라는 매핑은 확인되지 않았다.** 이는 TF32 해제를 보장하는 옵션이 아니다. 원본 역시 SS1의 성능 효과는 미검증이라고 명시한다. 근거: [원본 README](https://github.com/Zagitta/gpu-unlock#readme), [원본 selector 코드](https://github.com/Zagitta/gpu-unlock/blob/main/kernel/gpu_unlock/unlock_610.c).
+**SS1이 GA107의 TF32 필드라는 매핑은 공개 자료로 확인되지 않았다.** 이 보드에서는 SS1=8 적용 후 TF32 MMA 처리량이 약 2배가 됐지만(아래 [검증](#검증)), 필드 의미를 규명한 것은 아니며 다른 보드에서 같은 효과를 보장하지 않는다. 원본 역시 SS1의 성능 효과는 미검증이라고 명시한다. 근거: [원본 README](https://github.com/Zagitta/gpu-unlock#readme), [원본 selector 코드](https://github.com/Zagitta/gpu-unlock/blob/main/kernel/gpu_unlock/unlock_610.c).
 
 ## 동작
 
@@ -82,4 +82,4 @@ python3 bench/mma/compare.py build/mma/on-855.json build/mma/on-ss1-855.json \
 
 ## 검증
 
-현재 커널 `7.2.11-1-cachyos`의 LLVM 모듈 빌드와 모의 테스트를 통과했다. 기존 61개에 8개를 추가한 69개 전체 거래 시나리오에서 기본 SS1 무쓰기, 실제 진입값 7→8, 이미 8인 경우, SS0/SS1 write 실패, FLR 전후 SS1 손실, 잘못된 정책의 하드웨어 접근 전 거절을 검사한다. 모듈 진입 테스트는 ss1_full만 켠 dry-run의 비실행과 바인딩된 장치 거절도 확인한다. 실제 SS1=8 GPU 실행과 TF32 개선은 아직 검증하지 않았다.
+현재 커널 `7.2.11-1-cachyos`의 LLVM 모듈 빌드와 모의 테스트를 통과했다. 기존 61개에 8개를 추가한 69개 전체 거래 시나리오에서 기본 SS1 무쓰기, 실제 진입값 7→8, 이미 8인 경우, SS0/SS1 write 실패, FLR 전후 SS1 손실, 잘못된 정책의 하드웨어 접근 전 거절을 검사한다. 모듈 진입 테스트는 ss1_full만 켠 dry-run의 비실행과 바인딩된 장치 거절도 확인한다. 2026-10-19 실제 cold boot에서 SS1=8 적용·FLR 후 유지·NVIDIA 복귀를 확인했고, 855 MHz 고정 레지스터 MMA에서 TF32가 4.375 → 8.742 TFLOPS(약 256 → 511 ops/SM/clock, 1.998x)로 증가했다. FP16/BF16은 SS0만 적용했을 때와 같았고(1.000x) 모든 출력 오차는 0이었다. 체인별 결과는 [README](README.md#확인된-성능)에 있다. 일반 GEMM·실제 앱에서의 TF32 효과와 장시간 안정성은 아직 측정하지 않았다.
