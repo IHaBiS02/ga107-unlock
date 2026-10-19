@@ -4,7 +4,7 @@
 
 `0.1.0` 실행 후 BAR 자원이 유지돼 NVIDIA 초기화가 실패한 상태라면 먼저 `ga107_unlock.execute=0` 또는 실험 인자를 제거한 cold boot로 복구한다. `rmmod -f`, PCI 리셋, 재삽입으로 현재 부팅에서 강제 복구하지 않는다. `0.1.1`은 이 실패의 정렬/자원 관리 버그를 고쳤으나 새 실험 전에 정상 NVIDIA 복구부터 확인한다. 상세는 [INCIDENT-2026-10-19.md](INCIDENT-2026-10-19.md).
 
-## 기존 0.1.0 사용자: 정상 복구 후 0.1.1 교체
+## 기존 사용자: 정상 복구 후 현재 모듈 교체
 
 먼저 실행 인자를 끈 상태로 전원을 껐다 켜고 `nvidia-smi`가 정상 동작하는지 확인한다. 아래 명령은 디스크와 다음 부팅 이미지의 모듈만 교체하며 현재 로드된 모듈을 교체하지 않는다. 이미 설치한 펌웨어와 부팅 순서 훅은 그대로 사용한다.
 
@@ -21,7 +21,7 @@ sudo python3 tools/inspect_initramfs.py \
   /boot/MACHINE_ID/linux-cachyos/initramfs
 ```
 
-두 버전 출력은 `0.1.1-experimental`이어야 한다. 이미지 검사의 PASS는 부팅 순서 확인이며 모듈 버전이나 GPU 성공 검증은 아니다. 다음 부팅도 우선 `ga107_unlock.execute=0`으로 확인하고, 실제 실행은 아래 cold boot 실험 절차를 따른다. 이후 Falcon/V67 단계의 GA107 동작은 아직 실측 검증되지 않았다.
+두 버전 출력은 현재 소스의 `0.1.2-experimental`이어야 한다. 이미지 검사의 PASS는 부팅 순서 확인이며 모듈 버전이나 GPU 성공 검증은 아니다. 다음 부팅도 우선 `ga107_unlock.execute=0`으로 확인하고, 실제 실행은 아래 cold boot 실험 절차를 따른다. 0.1.1에서 기존 SS0 경로의 실제 실행은 확인했다. 0.1.2의 선택적 SS1 실험은 [SS1-EXPERIMENT.md](SS1-EXPERIMENT.md)를 따른다.
 
 ## 1. 먼저 일반 사용자로 빌드
 
@@ -32,7 +32,7 @@ make preflight
 modinfo kernel/gpu_unlock/ga107_unlock.ko
 ```
 
-현재 커널과 vermagic가 같아야 한다. 지금 제공된 `.ko`는 `7.2.9-2-cachyos`용이다. 커널이 바뀌면 다시 빌드해야 한다. 모듈 서명 강제 환경이라면 로컬 서명/등록이 별도로 필요하며 이 폴더는 Secure Boot 설정을 바꾸지 않는다.
+현재 커널과 vermagic가 같아야 한다. 현재 작업에서 빌드한 `.ko`는 `7.2.11-1-cachyos`용이다. 커널이 바뀌면 다시 빌드해야 한다. 모듈 서명 강제 환경이라면 로컬 서명/등록이 별도로 필요하며 이 폴더는 Secure Boot 설정을 바꾸지 않는다.
 
 ## 2. 선택 사항: 실행하지 않는 모드 확인
 
@@ -65,7 +65,7 @@ sudo depmod -a
 
 작성 당시 `/etc/mkinitcpio.conf.d/10-chwd.conf`에 NVIDIA 모듈들이 들어 있다. 제공한 drop-in은 해당 커널용 모듈이 설치돼 있는 경우에만 `ga107_unlock`을 추가하고, systemd 이미지에는 `ga107-order` 훅을 추가한다. 훅이 만드는 initrd 전용 서비스는 `systemd-modules-load`, `systemd-udevd`, `systemd-udev-trigger`보다 먼저 완료된다. systemd 262는 모듈을 병렬 로드하므로 MODULES 나열 순서만으로는 부족하다. 모듈이 없는 LTS는 제외한다.
 
-초기 설정의 `ga107_unlock?`는 수정했다. `?`가 systemd의 런타임 MODULES.conf에 남으면 모듈 이름으로 처리돼 로딩이 실패할 수 있다. **이전 설정을 설치했다면 아래 두 파일을 다시 설치하고 initramfs를 재생성해야 한다.** 이 설명은 부팅 순서 설정 변경에 한정한다. 0.1.0에서 0.1.1로 바꿀 때에는 위 교체 절차대로 커널 모듈도 재설치해야 한다.
+초기 설정의 `ga107_unlock?`는 수정했다. `?`가 systemd의 런타임 MODULES.conf에 남으면 모듈 이름으로 처리돼 로딩이 실패할 수 있다. **이전 설정을 설치했다면 아래 두 파일을 다시 설치하고 initramfs를 재생성해야 한다.** 이 설명은 부팅 순서 설정 변경에 한정한다. 모듈 소스 버전을 바꿀 때에는 위 교체 절차대로 커널 모듈도 재설치해야 한다.
 
 ```bash
 sudo install -Dm755 boot/ga107-order.install /etc/initcpio/install/ga107-order
@@ -133,3 +133,5 @@ sudo limine-mkinitcpio
 다른 커널용으로도 설치했다면 해당 커널의 `extra/ga107_unlock.ko`도 별도로 제거한다. 전용 펌웨어와 라이선스 디렉터리는 비활성 파일로 남겨도 실행되지 않는다.
 
 업데이트 후 유지·새 커널 재빌드·영구 부팅 설정과 ComfyUI 실측은 [UPDATE-NOTES.md](UPDATE-NOTES.md)에 정리했다.
+
+0.1.2의 선택적 SS1=8 부팅 인자·설치·측정·원복은 [SS1-EXPERIMENT.md](SS1-EXPERIMENT.md)에 있다. 기본값에서는 SS1을 보존한다.

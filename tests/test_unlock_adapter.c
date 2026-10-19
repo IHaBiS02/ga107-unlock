@@ -18,7 +18,7 @@ static struct {
     int gsp_starts,fwsec_mode,master_fail,selector_writes,ss1_writes,fw_live;
     int pending,lost_identity,corrupt_selector,alien_wpr;
     int fw_requests,fail_fw,fail_claim,fail_map,fail_save,fail_context,pins,selector_bad;
-    int restore_mask_fail,late_devres;
+    int restore_mask_fail,late_devres,ss1_reads_after_write;
     int group_requests,fail_group,group_live,group_before,cache_records,cache_released;
     int switch_stuck,dma_commands,dma_stall_after;
     int reset_delay,reset_reads[2],reset_pending[2],reset_post_fault;
@@ -83,6 +83,8 @@ u32 readl(const void *p) {
     if(eng>=0 && fake.reset_pending[eng] && ++fake.reset_reads[eng]>=fake.reset_delay) {
         regs[n]=1;fake.reset_pending[eng]=0;
     }
+    if(n==GU_FEAT_SS1_OFFSET/4 && fake.selector_bad==3 && fake.ss1_writes &&
+       ++fake.ss1_reads_after_write>=2)regs[n]=7; /* lost before FLR */
     return regs[n];
 }
 void writel(u32 v,void *p) {
@@ -300,7 +302,7 @@ int main(int argc, char **argv) {
         if(bad==2)dev.subsystem_device=0x0530;
         if(bad==3)dev.driver=&w;
         struct gpu_unlock_610_shared sh={0};
-        assert(gpu_unlock_610_unlock(&dev,&sh)==(bad==3?-EBUSY:-ENODEV));
+        assert(gpu_unlock_610_unlock(&dev,&sh,GPU_UNLOCK_SS1_PRESERVE)==(bad==3?-EBUSY:-ENODEV));
         assert(!fake.writes && !fake.fw_requests && !fake.allocs);
     }
     setup(&w);
@@ -572,7 +574,10 @@ int main(int argc, char **argv) {
             "post-gfw-late","post-gfw-timeout","post-gfw-inaccessible","post-gsp-resumed",
             "wpr-frts-retained","firmware-group-oom-first","firmware-group-oom-later","devres-preexisting","devres-at-handoff",
             "warm-wpr2","ss1-no-write","ss1-lost",
-            "fwsec-980-rounded","fwsec-unaligned-data","fwsec-imem-preflight"};
+            "fwsec-980-rounded","fwsec-unaligned-data","fwsec-imem-preflight",
+            "ss1-full-from7","ss1-full-readback-fail","ss1-full-lost-post-flr",
+            "ss1-full-already8","ss1-policy-invalid","ss1-full-ss0-fail","ss1-full-lost-pre-flr",
+            "ss1-default-preserve7"};
         int total_allocations=0;
         for(unsigned scenario=0;scenario<ARRAY_SIZE(cases);scenario++) {
             setup(&w);
@@ -641,20 +646,33 @@ int main(int argc, char **argv) {
                 if(scenario==59)vbios_w32(rom+276,0xe301);
                 if(scenario==60)vbios_w32(rom+280,1); /* DMA preflight fails after BME */
             }
+            enum gpu_unlock_ss1_policy policy=GPU_UNLOCK_SS1_PRESERVE;
+            if(scenario>=61) {
+                policy=GPU_UNLOCK_SS1_FULL_EXPERIMENT;
+                regs[GU_FEAT_SS1_OFFSET/4]=7;
+            }
+            if(scenario==68)policy=GPU_UNLOCK_SS1_PRESERVE;
+            if(scenario==62)fake.selector_bad=2;
+            if(scenario==63)fake.corrupt_selector=2;
+            if(scenario==64){regs[GU_FEAT_SS0_OFFSET/4]=0x88888888;regs[GU_FEAT_SS1_OFFSET/4]=8;}
+            if(scenario==65)policy=(enum gpu_unlock_ss1_policy)99;
+            if(scenario==66)fake.selector_bad=1;
+            if(scenario==67)fake.selector_bad=3;
             /* As main.c: the GSP file is loaded once, ahead of every card. */
             struct gpu_unlock_610_shared shared={0};last_work=NULL;
             int ret=gpu_unlock_610_load_shared(&dev,&shared);
-            if(!ret)ret=gpu_unlock_610_unlock(&dev,&shared);
+            if(!ret)ret=gpu_unlock_610_unlock(&dev,&shared,policy);
             gpu_unlock_610_release_shared(&shared);
-            bool expected=scenario<2 || (scenario>=33 && scenario<=35) || scenario==39 || scenario==40 || scenario==43 || scenario==46 || scenario==56 || scenario==58;
+            bool expected=scenario<2 || (scenario>=33 && scenario<=35) || scenario==39 || scenario==40 || scenario==43 || scenario==46 || scenario==56 || scenario==58 || scenario==61 || scenario==64 || scenario==68;
             bool retained=fake.pins;
             if((!ret)!=expected)fprintf(stderr,"%s\n%s: error=%d\n",fake.log,cases[scenario],ret);
             assert((!ret)==expected);
             if(expected) {
                 assert(fake.gsp_starts==1 && fake.starts==1 && fake.flrs==1 && !fake.pins);
                 assert(fake.apertures==1 && !fake.regions);
-                assert(fake.selector_writes==(scenario==1?0:1) && fake.ss1_writes==0);
-                assert(regs[GU_FEAT_SS0_OFFSET/4]==0x88888888 && regs[GU_FEAT_SS1_OFFSET/4]==(scenario==1?0x8:0x2));
+                assert(fake.selector_writes==(scenario==1 || scenario==64?0:1));
+                assert(fake.ss1_writes==(scenario==61?1:0));
+                assert(regs[GU_FEAT_SS0_OFFSET/4]==0x88888888 && regs[GU_FEAT_SS1_OFFSET/4]==(scenario==68?7:scenario==1 || scenario>=61?0x8:0x2));
                 assert(mask==0xffffffffffffull && dev.dev.coherent_dma_mask==0xfffffffffull);
                 /* Mirror Linux really_probe: driver entry rejects nonempty devres. */
                 assert(list_empty(&dev.dev.devres_head));
@@ -675,7 +693,7 @@ int main(int argc, char **argv) {
             }
             assert(!fake.gsp_post_reset_writes);
             assert(fake.gsp_starts<=1 && fake.starts<=1 && fake.flrs<=1 && fake.pins<=1);
-            assert(fake.selector_writes<=1 && fake.ss1_writes==0);
+            assert(fake.selector_writes<=1 && fake.ss1_writes<=(scenario>=61?1:0));
             if(retained) {
                 assert(last_work->retained && fake.live>0 && dev.refs==2);
                 /* Harness-only disposal of intentionally retained production state. */
@@ -698,11 +716,20 @@ int main(int argc, char **argv) {
                 assert(strstr(fake.log,"FWSEC DMEM: declared=0x980 transfer=0xa00"));
                 assert(strstr(fake.log,"size=0xa00"));
             }
-            if(scenario>=59) {
+            if(scenario==59 || scenario==60) {
                 assert(ret==-EINVAL && !retained && !fake.regions);
                 assert(!fake.dma_commands && !fake.gsp_starts && !fake.starts && !fake.flrs);
                 assert(!fake.selector_writes && !fake.ss1_writes);
             }
+            if(scenario==61)assert(strstr(fake.log,"SS1 opt-in experiment: entry=0x7 requested=0x8"));
+            if(scenario==62 || scenario==63 || scenario==67) {
+                assert(ret==-EIO && fake.ss1_writes==1);
+                assert(fake.flrs==(scenario==63?1:0));
+            }
+            if(scenario==64 || scenario==68)assert(!fake.ss1_writes);
+            if(scenario==68)assert(strstr(fake.log,"SS1 preserved: 0x7 (no write)"));
+            if(scenario==65)assert(ret==-EINVAL && !last_work && !fake.allocs && !fake.writes && fake.fw_requests==1);
+            if(scenario==66)assert(ret==-EIO && !fake.ss1_writes && !fake.flrs);
             if(scenario==55) {
                 assert(ret==-EBUSY && !retained && !fake.gsp_starts && !fake.starts && !fake.flrs);
                 assert(strstr(fake.log,"card already initialised since power on"));

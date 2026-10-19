@@ -1,6 +1,6 @@
 # CachyOS 업데이트와 언락 유지 메모
 
-작성: 2026-10-19. 대상: LG GA107 RTX 3050 Laptop, `ga107_unlock` 0.1.1-experimental.
+작성: 2026-10-19. 대상: LG GA107 RTX 3050 Laptop, 기준 실측은 `ga107_unlock` 0.1.1-experimental. 현재 소스는 0.1.2-experimental이며, 선택적 SS1 실험은 [SS1-EXPERIMENT.md](SS1-EXPERIMENT.md)를 따른다.
 
 ## 실사용 결과
 
@@ -42,7 +42,7 @@ modinfo -F vermagic kernel/gpu_unlock/ga107_unlock.ko
 modinfo -F version kernel/gpu_unlock/ga107_unlock.ko
 ```
 
-`vermagic` 선두가 선택한 커널 버전이고 모듈 버전이 `0.1.1-experimental`인지 확인한 뒤 설치한다. 빌드가 실패하거나 버전이 다르면 설치하지 않는다.
+`vermagic` 선두가 선택한 커널 버전이고 현재 소스의 모듈 버전 `0.1.2-experimental`인지 확인한 뒤 설치한다. 빌드가 실패하거나 버전이 다르면 설치하지 않는다.
 
 ```bash
 sudo install -Dm644 kernel/gpu_unlock/ga107_unlock.ko \

@@ -5,6 +5,12 @@
 struct firmware;
 struct pci_dev;
 
+/* SS1=8 is an optional upstream-matching experiment, not a verified TF32 map. */
+enum gpu_unlock_ss1_policy {
+    GPU_UNLOCK_SS1_PRESERVE = 0,
+    GPU_UNLOCK_SS1_FULL_EXPERIMENT = 1,
+};
+
 /* Read-only firmware every unlock uses: loaded once, shared by concurrent unlocks. */
 struct gpu_unlock_610_shared {
 	const struct firmware *gsp;
@@ -25,6 +31,7 @@ void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *shared);
  * errno, with hardware state possibly partially changed (power off before retry). Unlocks of different cards may run
  * concurrently with the same shared firmware.
  */
-int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shared *shared);
+int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shared *shared,
+                          enum gpu_unlock_ss1_policy ss1_policy);
 
 #endif

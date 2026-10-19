@@ -8,9 +8,12 @@
 
 static char *target;
 static bool execute;
+static bool ss1_full;
 module_param(target, charp, 0444);
 MODULE_PARM_DESC(target, "Exact full PCI address; no all/list support");
 module_param(execute, bool, 0444);
+module_param(ss1_full, bool, 0444);
+MODULE_PARM_DESC(ss1_full, "Opt in to unverified SS1=0x8 experiment; TF32 effect unknown (default false)");
 MODULE_PARM_DESC(execute, "Run unverified GA107 V67/SS0 experiment (default false)");
 
 static int __init ga107_unlock_init(void)
@@ -43,10 +46,12 @@ static int __init ga107_unlock_init(void)
             pci_dev_put(pdev);
             return -EBUSY;
         }
-        pci_warn(pdev, "ga107_unlock: EXPERIMENTAL V67 + SS0; SS1 preserved; performance unverified\n");
+        pci_warn(pdev, "ga107_unlock: EXPERIMENTAL V67 + SS0; SS1 policy=%s; TF32 effect unverified\n",
+                 ss1_full ? "full=0x8 (opt-in)" : "preserve");
         ret = gpu_unlock_610_load_shared(pdev, &shared);
         if (!ret)
-            ret = gpu_unlock_610_unlock(pdev, &shared);
+            ret = gpu_unlock_610_unlock(pdev, &shared, ss1_full ?
+                    GPU_UNLOCK_SS1_FULL_EXPERIMENT : GPU_UNLOCK_SS1_PRESERVE);
         gpu_unlock_610_release_shared(&shared);
         pci_dev_unlock(pdev);
         if (ret)
@@ -66,4 +71,4 @@ module_init(ga107_unlock_init);
 module_exit(ga107_unlock_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Experimental LG GA107 pre-driver V67/SS0 rate override");
-MODULE_VERSION("0.1.1-experimental");
+MODULE_VERSION("0.1.2-experimental");

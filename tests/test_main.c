@@ -6,6 +6,7 @@
 
 static struct pci_dev card;
 static int loads, unlocks, releases;
+static enum gpu_unlock_ss1_policy received_policy;
 void test_log(const struct pci_dev *p, const char *fmt, ...) { (void)p; (void)fmt; }
 struct pci_dev *pci_get_device(unsigned int v, unsigned int d, struct pci_dev *from)
 {
@@ -21,15 +22,16 @@ int gpu_unlock_610_load_shared(struct pci_dev *p, struct gpu_unlock_610_shared *
 { assert(p->locked); loads++; s->gsp=(void *)1; return 0; }
 void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *s)
 { assert(s->gsp); releases++; s->gsp=NULL; }
-int gpu_unlock_610_unlock(struct pci_dev *p, const struct gpu_unlock_610_shared *s)
-{ assert(p->locked && !p->driver && s->gsp); unlocks++; return -EIO; }
+int gpu_unlock_610_unlock(struct pci_dev *p, const struct gpu_unlock_610_shared *s,
+                          enum gpu_unlock_ss1_policy policy)
+{ assert(p->locked && !p->driver && s->gsp); received_policy=policy; unlocks++; return -EIO; }
 
 int main(void)
 {
-    for(int scenario=0; scenario<9; scenario++) {
+    for(int scenario=0; scenario<12; scenario++) {
         card=(struct pci_dev){.name="0000:01:00.0", .vendor=0x10de,
             .device=0x25ab,.subsystem_vendor=0x1854,.subsystem_device=0x052f,.refs=1};
-        target="0000:01:00.0"; execute=false; loads=unlocks=releases=0;
+        target="0000:01:00.0"; execute=false; ss1_full=false; received_policy=GPU_UNLOCK_SS1_PRESERVE; loads=unlocks=releases=0;
         if(scenario==0)target=NULL;
         if(scenario==2)target="all";
         if(scenario==3)target="0000:01:00.0,0000:02:00.0";
@@ -38,10 +40,14 @@ int main(void)
         if(scenario==6)card.device=0x2204;
         if(scenario==7)execute=true;
         if(scenario==8)target="0000:02:00.0";
+        if(scenario==9)ss1_full=true; /* opt-in alone does not execute */
+        if(scenario==10){ss1_full=true;execute=true;}
+        if(scenario==11){ss1_full=true;execute=true;card.driver=&card;}
         int ret=test_module_init();
         assert(ret==((scenario>=2 && scenario<=4) || scenario==6 || scenario==8 ?
-                     -ENODEV:scenario==5?-EBUSY:0));
-        assert(loads==(scenario==7) && unlocks==loads && releases==loads);
+                     -ENODEV:(scenario==5 || scenario==11)?-EBUSY:0));
+        assert(loads==(scenario==7 || scenario==10) && unlocks==loads && releases==loads);
+        if(loads)assert(received_policy==(scenario==10?GPU_UNLOCK_SS1_FULL_EXPERIMENT:GPU_UNLOCK_SS1_PRESERVE));
         assert(card.refs==1 && !card.locked);
     }
     puts("GA107 opt-in, BDF, board, bound-device and retained-failure entry checks passed");

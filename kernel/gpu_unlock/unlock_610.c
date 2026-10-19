@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Pre-driver V67 unlock, run before the stock driver binds: FWSEC-FRTS from
- * the board ROM, Booter with the V67 signature, the SS0 selector write (SS1 preserved), then
+ * the board ROM, Booter with the V67 signature, the SS0 selector write (SS1 optionally overridden), then
  * FLR so the stock driver starts from a clean, halted GSP.
  */
 #include <linux/aperture.h>
@@ -24,9 +24,10 @@
 #define SEC2_BASE 0x00840000u
 #define SEC2_FBIF 0x00840600u
 #define SEC2_FALCON2 0x00841000u
-/* SS0 holds eight 4-bit fields; SS1 stores only its low 4 bits (0x2 when
- * cold on the reference board). Only SS0 is written in this port. */
+/* Upstream selector values; GA107 operation-to-field mapping is unverified.
+ * This board enters with SS1=7. Preserve it unless ss1_full is opted in. */
 #define GU_SS0_UNLOCK 0x88888888u
+#define GU_SS1_FULL_EXPERIMENT 0x8u
 #define BOOTER_MAGIC 0x314c5442u
 #define BOOTER_FILE "ga107-unlock/610.43.03/booter_load_ga102.bin"
 #define V67_FILE "ga107-unlock/610.43.03/v67-ga102-610.43.03.bin"
@@ -86,6 +87,7 @@ struct unlock_transaction_work {
 	bool retained;
 	u32 plm_entry;
 	u32 ss1_entry;
+	enum gpu_unlock_ss1_policy ss1_policy;
 	u32 bars[6];
 	void *fwsec_cpu;
 	dma_addr_t fwsec_dma;
@@ -1125,8 +1127,14 @@ static int write_selector(struct unlock_transaction_work *work, const char *name
 	return GU_RESULT(value == unlock ? 0 : -EIO);
 }
 
-/* Experimental SS0-wide policy. No verified GA107 per-operation bit map
- * exists in the public headers. Preserve SS1; do not invent a BF16-only mask.
+static u32 expected_ss1(const struct unlock_transaction_work *work)
+{
+	return work->ss1_policy == GPU_UNLOCK_SS1_FULL_EXPERIMENT ?
+		GU_SS1_FULL_EXPERIMENT : work->ss1_entry;
+}
+
+/* SS1=8 matches the upstream experiment. Its TF32 effect on GA107 is unknown.
+ * Reuse the pre-driver transaction; do not add live-device register writes.
  */
 static int unlock_transaction_selector(struct unlock_transaction_work *work)
 {
@@ -1138,8 +1146,16 @@ static int unlock_transaction_selector(struct unlock_transaction_work *work)
 	if (ss1 != work->ss1_entry)
 		return GU_RESULT(-EIO);
 	ret = write_selector(work, "SS0", GU_FEAT_SS0_OFFSET, GU_SS0_UNLOCK);
+	if (ret)
+		return ret;
+	if (work->ss1_policy == GPU_UNLOCK_SS1_FULL_EXPERIMENT) {
+		dev_info(&work->pdev->dev,
+			 "SS1 opt-in experiment: entry=%#x requested=%#x; TF32 mapping unverified\n",
+			 work->ss1_entry, GU_SS1_FULL_EXPERIMENT);
+		return write_selector(work, "SS1", GU_FEAT_SS1_OFFSET, GU_SS1_FULL_EXPERIMENT);
+	}
 	dev_info(&work->pdev->dev, "SS1 preserved: %#x (no write)\n", ss1);
-	return ret;
+	return 0;
 }
 
 /* Reset SEC2 after FLR and leave it halted with reset released. Do not reset
@@ -1292,8 +1308,8 @@ static int unlock_transaction_reset(struct unlock_transaction_work *work)
 	    read_bar(work, GU_FEAT_SS1_OFFSET, &ss1) || ss1 == ~0u)
 		return GU_RESULT(-ENODEV);
 	dev_info(&work->pdev->dev, "pre-FLR selectors: ss0=%#x expected=%#x ss1=%#x expected=%#x\n",
-		ss0, GU_SS0_UNLOCK, ss1, work->ss1_entry);
-	if (ss0 != GU_SS0_UNLOCK || ss1 != work->ss1_entry)
+		ss0, GU_SS0_UNLOCK, ss1, expected_ss1(work));
+	if (ss0 != GU_SS0_UNLOCK || ss1 != expected_ss1(work))
 		return GU_RESULT(-EIO);
 	pci_clear_master(work->pdev);
 	work->master = false;
@@ -1371,7 +1387,7 @@ static int unlock_transaction_reset(struct unlock_transaction_work *work)
 		return GU_RESULT(-EBUSY);
 	}
 	work->quiesced = true;
-	if (ss0 != GU_SS0_UNLOCK || ss1 != work->ss1_entry)
+	if (ss0 != GU_SS0_UNLOCK || ss1 != expected_ss1(work))
 		return GU_RESULT(-EIO);
 	return 0;
 }
@@ -1387,11 +1403,15 @@ void gpu_unlock_610_release_shared(struct gpu_unlock_610_shared *shared)
 	shared->gsp = NULL;
 }
 
-int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shared *shared)
+int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shared *shared,
+                          enum gpu_unlock_ss1_policy ss1_policy)
 {
 	struct unlock_transaction_work *work;
 	int ret, cleanup;
 
+	if (ss1_policy != GPU_UNLOCK_SS1_PRESERVE &&
+	    ss1_policy != GPU_UNLOCK_SS1_FULL_EXPERIMENT)
+		return -EINVAL;
 	/* Reject alien boards or bound devices before requesting assets or MMIO. */
 	if (!ga107_board_matches(pdev->vendor, pdev->device,
 				pdev->subsystem_vendor, pdev->subsystem_device))
@@ -1402,6 +1422,7 @@ int gpu_unlock_610_unlock(struct pci_dev *pdev, const struct gpu_unlock_610_shar
 	if (!work)
 		return -ENOMEM;
 	work->pdev = pci_dev_get(pdev);
+	work->ss1_policy = ss1_policy;
 	work->gsp_fw = shared->gsp;
 	ret = unlock_transaction_assets(work);
 	if (!ret)

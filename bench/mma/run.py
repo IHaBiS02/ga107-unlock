@@ -133,6 +133,7 @@ def main():
             binary_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
             module_version=read_optional('/sys/module/ga107_unlock/version'),
             execute_parameter=read_optional('/sys/module/ga107_unlock/parameters/execute'),
+            ss1_full_parameter=read_optional('/sys/module/ga107_unlock/parameters/ss1_full'),
             clock_changes_performed=False, rows=[])
         args.output.parent.mkdir(parents=True, exist_ok=True)
         for mode in args.modes:

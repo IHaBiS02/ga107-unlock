@@ -8,6 +8,8 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('off', type=Path)
 parser.add_argument('on', type=Path)
+parser.add_argument('--baseline-label', default='OFF')
+parser.add_argument('--candidate-label', default='ON')
 args = parser.parse_args()
 off, on = (json.loads(path.read_text()) for path in (args.off, args.on))
 for field in ('schema', 'benchmark', 'gpu', 'sm', 'source_sha256', 'binary_sha256', 'driver', 'pci_bus'):
@@ -30,7 +32,7 @@ for k, r in a.items():
     clock = r.get('min_mhz')
     if clock is None or not (clock == r.get('max_mhz') == s.get('min_mhz') == s.get('max_mhz')):
         raise SystemExit(f'Case {k[:2]}: clocks are not fixed and identical')
-print('mode chains  OFF T/s   ON T/s  ON/OFF   OFF ops/SM/clk  ON ops/SM/clk')
+print(f'mode chains  {args.baseline_label} T/s   {args.candidate_label} T/s  candidate/baseline   baseline ops/SM/clk  candidate ops/SM/clk')
 for k, r in a.items():
     s = b[k]
     print(f"{r['mode']:4} {r['chains']:6} {r['tera_ops_s']:8.3f} {s['tera_ops_s']:8.3f} "
