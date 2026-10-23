@@ -99,7 +99,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--build-only', action='store_true')
     parser.add_argument('--device', type=int, default=0, help='CUDA device ordinal')
-    parser.add_argument('--modes', nargs='+', choices=['fp16', 'bf16', 'tf32'], default=['fp16', 'bf16', 'tf32'])
+    parser.add_argument('--modes', nargs='+', choices=['fp16', 'bf16', 'tf32', 'int8'], default=['fp16', 'bf16', 'tf32'])
     parser.add_argument('--chains', nargs='+', type=int, choices=[1, 4, 8], default=[1, 4, 8])
     parser.add_argument('--threads', type=int, choices=[128, 256], default=128)
     parser.add_argument('--blocks-per-sm', type=int, default=8)

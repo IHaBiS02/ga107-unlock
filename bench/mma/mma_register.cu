@@ -8,15 +8,19 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #define CUDA_CHECK(call) do { cudaError_t e = (call); if (e != cudaSuccess) \
     throw std::runtime_error(std::string(#call) + ": " + cudaGetErrorString(e)); } while (0)
 
-// All operands represent 2^-8. Uniform fragments make every output exactly
-// K * 2^-16 per instruction, independently of the lane/fragment mapping.
 template<int Mode>
-__device__ __forceinline__ void mma(float (&d)[4], unsigned x) {
+using Accumulator = std::conditional_t<Mode == 3, int, float>;
+
+// Floating operands represent 2^-8; INT8 operands are all 1.
+// Uniform fragments make the reference independent of lane/fragment mapping.
+template<int Mode>
+__device__ __forceinline__ void mma(Accumulator<Mode> (&d)[4], unsigned x) {
 #define MMA_TEXT(shape, type) \
     "mma.sync.aligned." shape ".row.col.f32." type "." type ".f32 " \
     "{%0,%1,%2,%3}, {%4,%4,%4,%4}, {%4,%4}, {%0,%1,%2,%3};\n"
@@ -26,16 +30,21 @@ __device__ __forceinline__ void mma(float (&d)[4], unsigned x) {
     } else if constexpr (Mode == 1) {
         asm volatile(MMA_TEXT("m16n8k16", "bf16")
             : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]) : "r"(x));
-    } else {
+    } else if constexpr (Mode == 2) {
         asm volatile(MMA_TEXT("m16n8k8", "tf32")
             : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]) : "r"(x));
+    } else {
+        asm volatile(
+            "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+            "{%0,%1,%2,%3}, {%4,%4,%4,%4}, {%4,%4}, {%0,%1,%2,%3};\n"
+            : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]) : "r"(x));
     }
 #undef MMA_TEXT
 }
 
 template<int Mode, int Chains>
-__global__ void tensor_loop(float* output, int iterations, unsigned operand) {
-    float acc[Chains][4] = {};
+__global__ void tensor_loop(Accumulator<Mode>* output, int iterations, unsigned operand) {
+    Accumulator<Mode> acc[Chains][4] = {};
     // Each chain has a dependency through C/D. Independent chains expose ILP.
     // Full warps execute the same MMA instruction without divergent control.
     for (int i = 0; i < iterations; ++i) {
@@ -70,15 +79,19 @@ template<int Mode, int Chains>
 void run(const Options& o, const cudaDeviceProp& p) {
     int blocks = p.multiProcessorCount * o.blocks_per_sm;
     size_t elements = size_t(blocks) * o.threads * Chains * 4;
-    float* output = nullptr;
-    CUDA_CHECK(cudaMalloc(&output, elements * sizeof(float)));
+    using Acc = Accumulator<Mode>;
+    Acc* output = nullptr;
+    CUDA_CHECK(cudaMalloc(&output, elements * sizeof(Acc)));
     cudaEvent_t begin, end;
     CUDA_CHECK(cudaEventCreate(&begin));
     CUDA_CHECK(cudaEventCreate(&end));
-    unsigned operand = Mode == 0 ? 0x1c001c00u : Mode == 1 ? 0x3b803b80u : 0x3b800000u;
-    int k = Mode == 2 ? 8 : 16;
+    unsigned operand = Mode == 0 ? 0x1c001c00u : Mode == 1 ? 0x3b803b80u :
+                       Mode == 2 ? 0x3b800000u : 0x01010101u;
+    int k = Mode == 3 ? 32 : Mode == 2 ? 8 : 16;
     cudaFuncAttributes attributes;
     CUDA_CHECK(cudaFuncGetAttributes(&attributes, tensor_loop<Mode, Chains>));
+    if (attributes.localSizeBytes != 0)
+        throw std::runtime_error("local memory detected; refusing non-register-only measurement");
     int active_blocks = 0;
     CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &active_blocks, tensor_loop<Mode, Chains>, o.threads, 0));
@@ -112,11 +125,12 @@ void run(const Options& o, const cudaDeviceProp& p) {
     }
     auto measure_end = unix_ns();
     // Check every output from every thread and every chain (not only a sample).
-    std::vector<float> actual(elements);
-    CUDA_CHECK(cudaMemcpy(actual.data(), output, elements * sizeof(float), cudaMemcpyDeviceToHost));
-    float expected = float(double(o.iterations) * 8 * k / 65536.0);
+    std::vector<Acc> actual(elements);
+    CUDA_CHECK(cudaMemcpy(actual.data(), output, elements * sizeof(Acc), cudaMemcpyDeviceToHost));
+    // INT8's largest allowed reference is 67,108,864, within signed INT32.
+    double expected = double(o.iterations) * 8 * k / (Mode == 3 ? 1.0 : 65536.0);
     double max_error = 0;
-    for (float x : actual) {
+    for (Acc x : actual) {
         if (!std::isfinite(x)) throw std::runtime_error("non-finite MMA output");
         max_error = std::max(max_error, std::abs(double(x) - expected));
     }
@@ -160,7 +174,7 @@ int main(int argc, char** argv) {
             std::string key = argv[i];
             if (key == "--info") { info_only = true; continue; }
             if (key == "--help") {
-                puts("--mode fp16|bf16|tf32 --chains 1|4|8 --iterations 1..262144 "
+                puts("--mode fp16|bf16|tf32|int8 --chains 1|4|8 --iterations 1..262144 "
                      "--repeats 1..25 (odd) --threads 128|256 --blocks-per-sm 1..32 --device N");
                 return 0;
             }
@@ -174,7 +188,7 @@ int main(int argc, char** argv) {
             else if (key == "--device") o.device = number(argv[i]);
             else throw std::runtime_error("unknown option: " + key);
         }
-        if ((o.mode != "fp16" && o.mode != "bf16" && o.mode != "tf32") ||
+        if ((o.mode != "fp16" && o.mode != "bf16" && o.mode != "tf32" && o.mode != "int8") ||
             (o.chains != 1 && o.chains != 4 && o.chains != 8) ||
             o.iterations < 1 || o.iterations > 262144 || o.repeats < 1 || o.repeats > 25 ||
             o.repeats % 2 == 0 || (o.threads != 128 && o.threads != 256) ||
@@ -193,7 +207,8 @@ int main(int argc, char** argv) {
         }
         if (o.mode == "fp16") dispatch<0>(o, props);
         else if (o.mode == "bf16") dispatch<1>(o, props);
-        else dispatch<2>(o, props);
+        else if (o.mode == "tf32") dispatch<2>(o, props);
+        else dispatch<3>(o, props);
     } catch (const std::exception& e) {
         fprintf(stderr, "mma_register: %s\n", e.what());
         return 1;
