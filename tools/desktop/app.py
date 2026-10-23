@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Desktop status window. Only collects information and copies commands."""
+"""Desktop status window with an explicitly started register MMA benchmark."""
 import argparse
 import json
 import os
@@ -21,7 +21,7 @@ def main():
             'state', 'applied', 'execute', 'ss1_full', 'reasons')}, ensure_ascii=False, indent=2))
         return
     try:
-        from PySide6.QtCore import QThread, Signal, QTimer, Qt
+        from PySide6.QtCore import QThread, Signal, QTimer, Qt, QProcess
         from PySide6.QtGui import QFontDatabase
         from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
             QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QFormLayout, QTabWidget)
@@ -68,28 +68,71 @@ def main():
             self.note = QLabel('자동으로 빌드·설치·GPU 쓰기·재부팅을 실행하지 않습니다.')
             self.note.setWordWrap(True)
             layout.addWidget(self.note)
-            tabs = QTabWidget()
+            tabs = self.tabs = QTabWidget()
             self.commands, self.evidence = QPlainTextEdit(), QPlainTextEdit()
-            for editor in (self.commands, self.evidence):
+            self.benchmark_output = QPlainTextEdit()
+            self.benchmark_output.setPlainText('실행 버튼을 누르면 FP16·BF16·TF32·INT8 레지스터 MMA를 측정합니다.\n'
+                '메모리 대역폭 테스트는 실행하지 않습니다. 결과는 이 창에만 표시합니다.\n'
+                '클럭·전력 설정을 변경하거나 언락 여부를 판정하지 않습니다.\n'
+                'CUDA Toolkit(nvcc)이 필요하며, 첫 실행에는 컴파일 시간이 걸립니다.')
+            for editor in (self.commands, self.evidence, self.benchmark_output):
                 editor.setReadOnly(True)
                 editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
                 editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
             tabs.addTab(self.commands, '적용 명령어')
             tabs.addTab(self.evidence, '현재 부팅 근거')
+            tabs.addTab(self.benchmark_output, '성능 벤치마크')
+            self.benchmark_process = QProcess(self)
+            self.benchmark_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self.benchmark_process.readyReadStandardOutput.connect(self.read_benchmark)
+            self.benchmark_process.finished.connect(self.benchmark_finished)
+            self.benchmark_process.errorOccurred.connect(self.benchmark_error)
             layout.addWidget(tabs, 1)
             buttons = QHBoxLayout()
             self.refresh = QPushButton('다시 검사')
             self.refresh.clicked.connect(self.check)
+            self.benchmark_button = QPushButton('레지스터 MMA 실행')
+            self.benchmark_button.clicked.connect(self.run_benchmark)
             self.copy = QPushButton('명령어 전체 복사')
             self.copy.clicked.connect(lambda: QApplication.clipboard().setText(self.commands.toPlainText()))
             close = QPushButton('닫기')
             close.clicked.connect(self.close)
             buttons.addWidget(self.refresh)
+            buttons.addWidget(self.benchmark_button)
             buttons.addStretch()
             buttons.addWidget(self.copy)
             buttons.addWidget(close)
             layout.addLayout(buttons)
             self.setCentralWidget(page)
+
+        def run_benchmark(self):
+            if self.benchmark_process.state() != QProcess.ProcessState.NotRunning:
+                return
+            self.tabs.setCurrentWidget(self.benchmark_output)
+            self.benchmark_output.clear()
+            self.benchmark_button.setEnabled(False)
+            self.benchmark_process.setWorkingDirectory(str(ROOT))
+            self.benchmark_process.start(sys.executable,
+                ['-u', str(Path(__file__).with_name('benchmark.py'))])
+
+        def read_benchmark(self):
+            text = bytes(self.benchmark_process.readAllStandardOutput()).decode('utf-8', errors='replace')
+            cursor = self.benchmark_output.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            cursor.insertText(text)
+            self.benchmark_output.setTextCursor(cursor)
+            self.benchmark_output.ensureCursorVisible()
+
+        def benchmark_finished(self, code, exit_status):
+            self.read_benchmark()
+            self.benchmark_button.setEnabled(True)
+            if code or exit_status == QProcess.ExitStatus.CrashExit:
+                self.benchmark_output.appendPlainText(f'\n벤치마크가 완료되지 않았습니다 (종료 코드 {code}).')
+
+        def benchmark_error(self, error):
+            if error == QProcess.ProcessError.FailedToStart:
+                self.benchmark_button.setEnabled(True)
+                self.benchmark_output.appendPlainText(self.benchmark_process.errorString())
 
         def check(self):
             if self.worker is not None and self.worker.isRunning():
@@ -148,6 +191,11 @@ def main():
             self.first = False
 
         def closeEvent(self, event):
+            if self.benchmark_process.state() != QProcess.ProcessState.NotRunning:
+                self.benchmark_output.appendPlainText('측정이 진행 중입니다. 완료 후 창을 닫을 수 있습니다.')
+                self.tabs.setCurrentWidget(self.benchmark_output)
+                event.ignore()
+                return
             if self.worker is not None and self.worker.isRunning():
                 self.hide()
                 self.quit_when_done = True
